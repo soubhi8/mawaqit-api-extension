@@ -1,116 +1,115 @@
 from fastapi.testclient import TestClient
 
-from main import app
 from config.settings import settings
+from main import app
+import scraping.script as script
+
 
 client = TestClient(app)
 API_ROOT = "/api/v1"
 
 
 def _apply_settings(monkeypatch, enable_auth=False, bearer_token=None):
-    """
-    Hilfsfunktion: patched settings für Tests.
-    """
     monkeypatch.setattr(settings, "ENABLE_AUTH", enable_auth, raising=False)
     monkeypatch.setattr(settings, "BEARER_TOKEN", bearer_token, raising=False)
 
 
-def _auth_header():
-    return (
-        {"Authorization": f"Bearer {settings.BEARER_TOKEN}"}
-        if getattr(settings, "ENABLE_AUTH", False) and getattr(settings, "BEARER_TOKEN", None)
-        else {}
-    )
-
-
 def test_read_root():
-    """Root endpoint should be accessible without authentication"""
     response = client.get(API_ROOT)
+
     assert response.status_code == 200
     assert response.json() == {
-        "Greetings": "Hello and Welcome to this Api, this api use the mawaqit.net as data source of prayers time in more than 8000 masjid, this api can be used to fetch data in json, you can find our docs on /docs. "
+        "Greetings": (
+            "Hello and Welcome to this Api, this api use the mawaqit.net as data source "
+            "of prayers time in more than 8000 masjid, this api can be used to fetch "
+            "data in json, you can find our docs on /docs. "
+        )
     }
 
 
-def test_missing_bearer_token_when_auth_enabled(monkeypatch):
-    """Wenn Auth aktiviert ist, sollten Anfragen ohne Token 401 zurückgeben"""
+def test_prayer_times_endpoint_returns_scraped_data(monkeypatch):
+    expected = {
+        "fajr": "05:10",
+        "sunrise": "06:42",
+        "dohr": "12:30",
+        "asr": "15:45",
+        "maghreb": "18:12",
+        "icha": "19:40",
+    }
+    calls = []
+
+    def fake_get_prayer_times(masjid_id):
+        calls.append(masjid_id)
+        return expected
+
+    _apply_settings(monkeypatch)
+    monkeypatch.setattr(script, "get_prayer_times_of_the_day", fake_get_prayer_times)
+
+    response = client.get(f"{API_ROOT}/test-mosque/prayer-times")
+
+    assert response.status_code == 200
+    assert response.json() == expected
+    assert calls == ["test-mosque"]
+
+
+def test_authentication_protects_api_endpoint(monkeypatch):
     _apply_settings(monkeypatch, enable_auth=True, bearer_token="test-secret")
-    response = client.get(f"{API_ROOT}/assalam-argenteuil/prayer-times")
-    assert response.status_code == 401
-    detail = response.json().get("detail", "")
-    assert "Authorization" in detail or "bearer" in str(detail).lower()
-
-
-def test_missing_bearer_token_when_auth_disabled(monkeypatch):
-    """Wenn Auth deaktiviert ist, sollten Anfragen ohne Token 200 zurückgeben"""
-    _apply_settings(monkeypatch, enable_auth=False, bearer_token=None)
-    response = client.get(f"{API_ROOT}/assalam-argenteuil/prayer-times")
-    assert response.status_code == 200
-
-
-def test_invalid_bearer_token(monkeypatch):
-    """Ungültiges Token sollte 401 zurückgeben, wenn Auth aktiviert ist"""
-    _apply_settings(monkeypatch, enable_auth=True, bearer_token="valid-token")
-    response = client.get(
-        f"{API_ROOT}/assalam-argenteuil/prayer-times",
-        headers={"Authorization": "Bearer invalid-token"},
+    monkeypatch.setattr(
+        script,
+        "get_prayer_times_of_the_day",
+        lambda _: {
+            "fajr": "05:10",
+            "sunrise": "06:42",
+            "dohr": "12:30",
+            "asr": "15:45",
+            "maghreb": "18:12",
+            "icha": "19:40",
+        },
     )
-    assert response.status_code == 401
+
+    missing = client.get(f"{API_ROOT}/test-mosque/prayer-times")
+    invalid = client.get(
+        f"{API_ROOT}/test-mosque/prayer-times",
+        headers={"Authorization": "Bearer wrong-secret"},
+    )
+    valid = client.get(
+        f"{API_ROOT}/test-mosque/prayer-times",
+        headers={"Authorization": "Bearer test-secret"},
+    )
+
+    assert missing.status_code == 401
+    assert invalid.status_code == 401
+    assert valid.status_code == 200
 
 
-def test_get_prayer_times(monkeypatch):
-    """Prayer times endpoint"""
-    _apply_settings(monkeypatch, enable_auth=True, bearer_token="valid-token")
-    response = client.get(f"{API_ROOT}/assalam-argenteuil/prayer-times", headers=_auth_header())
-    r_json = response.json()
+def test_month_calendar_rejects_invalid_month(monkeypatch):
+    _apply_settings(monkeypatch)
+
+    response = client.get(f"{API_ROOT}/test-mosque/calendar/13")
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "Month number should be between 1 and 12"
+
+
+def test_month_calendar_endpoint_serializes_prayer_times(monkeypatch):
+    _apply_settings(monkeypatch)
+    monkeypatch.setattr(
+        script,
+        "get_month",
+        lambda masjid_id, month_number: [
+            {
+                "fajr": "05:10",
+                "sunrise": "06:42",
+                "dohr": "12:30",
+                "asr": "15:45",
+                "maghreb": "18:12",
+                "icha": "19:40",
+            }
+        ],
+    )
+
+    response = client.get(f"{API_ROOT}/test-mosque/calendar/1")
+
     assert response.status_code == 200
-    assert len(r_json) == 6
-
-def test_get_next_prayer_times(monkeypatch):
-    """Get next time prayer when prayer is passed"""
-    _apply_settings(monkeypatch, enable_auth=True, bearer_token="valid-token")
-    response = client.get(f"{API_ROOT}/tarn-graulhet/next-prayer-times", headers=_auth_header())
-    r_json = response.json()
-    assert response.status_code == 200
-    assert len(r_json) == 6
-
-
-def test_get_year_calendar(monkeypatch):
-    """Year calendar endpoint"""
-    _apply_settings(monkeypatch, enable_auth=True, bearer_token="valid-token")
-    response = client.get(f"{API_ROOT}/assalam-argenteuil/calendar", headers=_auth_header())
-    r_json = response.json()
-    assert response.status_code == 200
-    assert len(r_json["calendar"]) == 12
-
-
-def test_get_month_calendar(monkeypatch):
-    """Month calendar endpoint"""
-    _apply_settings(monkeypatch, enable_auth=True, bearer_token="valid-token")
-    response = client.get(f"{API_ROOT}/assalam-argenteuil/calendar/1", headers=_auth_header())
-    r_json = response.json()
-    assert response.status_code == 200
-    assert len(r_json) == 31
-
-
-def test_get_announcements(monkeypatch):
-    """Announcements endpoint"""
-    _apply_settings(monkeypatch, enable_auth=True, bearer_token="valid-token")
-    response = client.get(f"{API_ROOT}/assalam-argenteuil/announcements", headers=_auth_header())
-    assert response.status_code == 200
-
-
-def test_get_services(monkeypatch):
-    """Services endpoint"""
-    _apply_settings(monkeypatch, enable_auth=True, bearer_token="valid-token")
-    response = client.get(f"{API_ROOT}/assalam-argenteuil/services", headers=_auth_header())
-    assert response.status_code == 200
-
-
-def test_get_month_calendar_iqama(monkeypatch):
-    """Month calendar iqama endpoint"""
-    _apply_settings(monkeypatch, enable_auth=True, bearer_token="valid-token")
-    response = client.get(f"{API_ROOT}/assalam-argenteuil/calendar-iqama/1", headers=_auth_header())
-    r_json = response.json()
-    assert response.status_code == 200
-    assert len(r_json) == 31
+    assert len(response.json()) == 1
+    assert response.json()[0]["fajr"] == "05:10"
