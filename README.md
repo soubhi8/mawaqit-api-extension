@@ -27,7 +27,9 @@ RUN_LIVE_TESTS=1 python -m pytest -m live
 The live smoke test bypasses the scraper's Redis cache and checks that the prayer
 times endpoint returns all six valid times. It makes a real HTTPS request with a
 20-second timeout and can fail if Mawaqit is unavailable or changes its page format.
-It is skipped by default to keep CI independent of upstream availability.
+It is skipped by default locally and in the offline CI suite. A separate
+`Live smoke test` check runs it on pull requests and pushes to `main`, so upstream
+availability failures are visible independently of unit and integration results.
 
 ## License
 
